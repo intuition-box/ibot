@@ -1,0 +1,32 @@
+{
+  "name": "ibot",
+  "version": "1.0.0",
+  "description": "The Intuition community's utility bot: support tickets + the resources panel.",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "format": "biome check --write src"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
