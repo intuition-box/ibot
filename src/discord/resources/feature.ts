@@ -2,7 +2,7 @@ import type { ButtonInteraction, ChatInputCommandInteraction } from 'discord.js'
 import { ID } from '../constants.js';
 import type { Feature } from '../feature.js';
 import { handlePostCommand, handlePostModal, postCommand } from './compose.js';
-import { handleRoleClaim, handleRolesCommand, rolesCommand } from './roles.js';
+import { handleRoleClaim, handleRolesCommand, handleRolesModal, rolesCommand } from './roles.js';
 import { handleUpdateCommand, handleUpdateModal, updateCommand } from './update.js';
 
 /** command name → handler, so adding a command is one entry rather than a branch. */
@@ -22,6 +22,7 @@ const MODAL_HANDLERS: ReadonlyArray<{
 }> = [
   { prefix: `${ID.postModal}:`, handle: handlePostModal },
   { prefix: `${ID.updateModal}:`, handle: handleUpdateModal },
+  { prefix: `${ID.rolesModal}:`, handle: handleRolesModal },
 ];
 
 /**

@@ -5,12 +5,28 @@ import {
   ButtonStyle,
   ChannelType,
   type ChatInputCommandInteraction,
+  LabelBuilder,
   MessageFlags,
+  ModalBuilder,
+  type ModalSubmitInteraction,
   PermissionsBitField,
   SlashCommandBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 import { logger } from '../../lib/logger.js';
 import { ID } from '../constants.js';
+
+/** Discord's per-message content ceiling; the modal input is capped to match. */
+const MESSAGE_CONTENT_LIMIT = 2000;
+
+/** Pre-filled in the form so the box is never blank; edit or clear it freely. */
+const DEFAULT_INTRO = [
+  '​',
+  '> Toggle to claim/remove a role with the buttons below.',
+  '> **Builder** — you’re actively building on Intuition.',
+  '> **Events** — get notified about community events, calls, and activities.',
+].join('\n');
 
 /**
  * Roles members can self-assign via the buttons `/roles` posts. Resolved by NAME
@@ -50,8 +66,10 @@ function buildClaimRow(): ActionRowBuilder<ButtonBuilder> {
 }
 
 /**
- * Posts the button row on its own, so any explanatory text can be written
- * separately with `/post` and this sits beneath it.
+ * Opens a form for the explanatory text that sits above the buttons. Text and
+ * buttons go out as ONE message — the content renders above the action row — so
+ * they can never drift apart, and `/update` can reword the text later without
+ * disturbing the buttons.
  */
 export async function handleRolesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
@@ -61,22 +79,63 @@ export async function handleRolesCommand(interaction: ChatInputCommandInteractio
     });
     return;
   }
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
   if (!interaction.guild) {
-    await interaction.editReply('⚠️ This command must be used in a server.');
+    await interaction.reply({
+      content: '⚠️ This command must be used in a server.',
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
   const channelId = interaction.options.getChannel('channel')?.id ?? interaction.channelId;
+
+  const modal = new ModalBuilder()
+    .setCustomId(`${ID.rolesModal}:${channelId}`)
+    .setTitle('Post role buttons')
+    .addComponents(
+      new LabelBuilder()
+        .setLabel('Intro text')
+        .setDescription('Shown above the buttons. Optional, but gives members context.')
+        .setTextInputComponent(
+          new TextInputBuilder()
+            .setCustomId('content')
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(MESSAGE_CONTENT_LIMIT)
+            .setRequired(false)
+            .setValue(DEFAULT_INTRO),
+        ),
+    );
+
+  await interaction.showModal(modal);
+}
+
+export async function handleRolesModal(interaction: ModalSubmitInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const [, channelId] = interaction.customId.split(':');
+  if (!channelId || !interaction.guild) {
+    await interaction.editReply('⚠️ Malformed request.');
+    return;
+  }
+
   const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) {
     await interaction.editReply('⚠️ Pick a server text channel to post into.');
     return;
   }
 
+  // A throw here would land after deferReply(), where the router can no longer reply.
+  let raw = '';
+  try {
+    raw = interaction.fields.getTextInputValue('content');
+  } catch {
+    raw = '';
+  }
+  const content = raw.trim() ? raw : undefined;
+
   try {
     const posted = await channel.send({
+      // Buttons alone are a valid message, so empty text simply omits the line.
+      ...(content ? { content } : {}),
       components: [buildClaimRow()],
       allowedMentions: { parse: [] },
     });

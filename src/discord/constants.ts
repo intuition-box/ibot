@@ -49,4 +49,6 @@ export const ID = {
   updateModal: 'update_modal',
   /** Prefix for the /post compose modal; full id is `post_modal:<channelId>`. */
   postModal: 'post_modal',
+  /** Prefix for the /roles compose modal; full id is `roles_modal:<channelId>`. */
+  rolesModal: 'roles_modal',
 } as const;
