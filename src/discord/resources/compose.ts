@@ -1,7 +1,6 @@
 import {
   ChannelType,
   type ChatInputCommandInteraction,
-  ComponentType,
   FileUploadBuilder,
   LabelBuilder,
   MessageFlags,
@@ -95,19 +94,16 @@ export async function handlePostModal(interaction: ModalSubmitInteraction): Prom
   }
 
   const content = interaction.fields.getTextInputValue('content');
-  // The file field is optional, so it may be absent entirely — never throw on a miss.
-  let imageUrl: string | undefined;
-  try {
-    imageUrl = interaction.fields
-      .getField('image', ComponentType.FileUpload)
-      .attachments.first()?.url;
-  } catch {
-    imageUrl = undefined;
-  }
+  // The file field is optional; getUploadedFiles returns null rather than throwing.
+  const upload = interaction.fields.getUploadedFiles('image')?.first();
 
   try {
-    // Banner first as its own message, matching the /resources panel layout.
-    if (imageUrl) await channel.send({ files: [imageUrl] });
+    // Banner first as its own message, so the text reads beneath it. The name is
+    // passed explicitly because discord.js would otherwise derive the filename from
+    // the signed CDN url via basename(), baking the query string into it.
+    if (upload) {
+      await channel.send({ files: [{ attachment: upload.url, name: upload.name }] });
+    }
     const posted = await channel.send({ content, allowedMentions: { parse: [] } });
     // Hand back the text message's link — that's the id `/update` edits later.
     await interaction.editReply(`✅ Posted: ${posted.url}\nEdit it later with \`/update\`.`);

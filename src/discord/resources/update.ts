@@ -1,7 +1,9 @@
 import {
-  ActionRowBuilder,
   ChannelType,
   type ChatInputCommandInteraction,
+  FileUploadBuilder,
+  LabelBuilder,
+  type MessageEditOptions,
   MessageFlags,
   ModalBuilder,
   type ModalSubmitInteraction,
@@ -19,13 +21,24 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 const MESSAGE_CONTENT_LIMIT = 2000;
 
 /**
- * `/update` — edit one of the bot's OWN posted messages (e.g. a `/resources` page)
- * in place. A bot can only edit messages it authored, so this is scoped to that;
- * it never posts a new message or pings anyone.
+ * Discord rejects a Label description over 100 characters, and the builder throws
+ * while assembling the modal — which would make the message uneditable rather than
+ * merely ugly. Filenames are user-supplied, so both the name and the finished
+ * sentence are bounded.
+ */
+const LABEL_DESCRIPTION_LIMIT = 100;
+const FILENAME_DISPLAY_LIMIT = 32;
+const ellipsize = (text: string, max: number): string =>
+  text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+/**
+ * `/update` — edit one of the bot's OWN posted messages in place. A bot can only
+ * edit messages it authored, so this is scoped to that; it never posts a new
+ * message or pings anyone.
  */
 export const updateCommand = new SlashCommandBuilder()
   .setName('update')
-  .setDescription("Edit one of the bot's posted messages (e.g. a resources page) in place.")
+  .setDescription("Edit one of the bot's posted messages (text and/or image) in place.")
   .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
   .setDMPermission(false)
   .addStringOption((o) =>
@@ -105,21 +118,43 @@ export async function handleUpdateCommand(interaction: ChatInputCommandInteracti
     return;
   }
 
-  // Pre-fill the modal with the current content so the editor just tweaks it
-  // (e.g. appends a link) rather than retyping the whole page.
-  const input = new TextInputBuilder()
+  // The modal adapts to what the message actually holds: a banner message has no
+  // text, so the text field must be optional and unset rather than a required
+  // field pre-filled with an empty string (which cannot be submitted).
+  const current = message.attachments.first();
+  const text = new TextInputBuilder()
     .setCustomId('content')
-    .setLabel('Message content')
     .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(MESSAGE_CONTENT_LIMIT)
-    .setRequired(true)
-    .setValue(message.content.slice(0, MESSAGE_CONTENT_LIMIT));
+    .setRequired(false);
+  if (message.content) text.setValue(message.content.slice(0, MESSAGE_CONTENT_LIMIT));
 
   const modal = new ModalBuilder()
     // customId carries the target so the submit handler knows what to edit.
     .setCustomId(`${ID.updateModal}:${ref.channelId}:${ref.messageId}`)
     .setTitle('Edit message')
-    .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    .addComponents(
+      new LabelBuilder()
+        .setLabel('Message text')
+        .setDescription(
+          message.content ? 'Edit the text below.' : 'This message has no text — optional.',
+        )
+        .setTextInputComponent(text),
+      new LabelBuilder()
+        .setLabel('Image')
+        // Modals can't render a preview, so name the current file instead.
+        .setDescription(
+          ellipsize(
+            current
+              ? `Currently: ${ellipsize(current.name, FILENAME_DISPLAY_LIMIT)}. Upload to replace it, or leave empty to keep it.`
+              : 'Optional. Upload an image to add one.',
+            LABEL_DESCRIPTION_LIMIT,
+          ),
+        )
+        .setFileUploadComponent(
+          new FileUploadBuilder().setCustomId('image').setRequired(false).setMaxValues(1),
+        ),
+    );
 
   await interaction.showModal(modal);
 }
@@ -145,10 +180,54 @@ export async function handleUpdateModal(interaction: ModalSubmitInteraction): Pr
     return;
   }
 
-  const content = interaction.fields.getTextInputValue('content');
+  // Both fields are optional, so either may be missing from the submission. A throw
+  // here would land after deferReply(), where the router can no longer reply — the
+  // moderator would just watch "thinking…" forever.
+  let raw = '';
   try {
-    await message.edit({ content, allowedMentions: { parse: [] } });
-    await interaction.editReply(`✅ Updated ${message.url}`);
+    raw = interaction.fields.getTextInputValue('content');
+  } catch {
+    raw = '';
+  }
+  // Treat a whitespace-only box as a deliberate clear, so an edit can't leave an
+  // invisible blank line under a banner.
+  const content = raw.trim() ? raw : '';
+  const upload = interaction.fields.getUploadedFiles('image')?.first();
+  // The attachment the modal named as "Currently: …" — the one an upload replaces.
+  const current = message.attachments.first();
+
+  // Discord rejects an edit that would leave a message with nothing in it. Embeds,
+  // components, polls and stickers all keep a message valid, so none of them may
+  // count as "empty" — the /roles button row has no text or attachments at all.
+  const keepsBody =
+    upload !== undefined ||
+    message.attachments.size > 0 ||
+    message.embeds.length > 0 ||
+    message.components.length > 0 ||
+    message.stickers.size > 0;
+  if (!content && !keepsBody) {
+    await interaction.editReply(
+      '⚠️ That would leave the message empty. Add text, or upload an image.',
+    );
+    return;
+  }
+
+  const payload: MessageEditOptions = { content, allowedMentions: { parse: [] } };
+  if (upload) {
+    // `attachments` is the KEEP list — omitting it keeps everything. discord.js
+    // appends the new upload, so listing every attachment EXCEPT the one the modal
+    // named replaces just that file instead of silently dropping the others.
+    payload.attachments = [...message.attachments.values()]
+      .filter((a) => a.id !== current?.id)
+      .map((a) => ({ id: a.id }));
+    // Pass the name explicitly: from a bare CDN url discord.js derives the filename
+    // via basename(), which would bake the signed query string into it.
+    payload.files = [{ attachment: upload.url, name: upload.name }];
+  }
+
+  try {
+    await message.edit(payload);
+    await interaction.editReply(`✅ Updated ${message.url}${upload ? ' (image replaced)' : ''}`);
   } catch (error) {
     logger.error('Failed to edit message:', error);
     await interaction.editReply(`⚠️ Edit failed: ${errMsg(error)}`);
