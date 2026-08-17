@@ -47,4 +47,6 @@ export const ID = {
   claimRole: 'claim_role',
   /** Prefix for the /update edit modal; full id is `update_modal:<channelId>:<messageId>`. */
   updateModal: 'update_modal',
+  /** Prefix for the /post compose modal; full id is `post_modal:<channelId>`. */
+  postModal: 'post_modal',
 } as const;

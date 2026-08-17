@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -9,12 +7,34 @@ import {
   type ChatInputCommandInteraction,
   MessageFlags,
   PermissionsBitField,
+  SlashCommandBuilder,
 } from 'discord.js';
 import { logger } from '../../lib/logger.js';
 import { ID } from '../constants.js';
-import { CLAIMABLE_ROLES, RESOURCE_SECTIONS } from './content.js';
 
-const BANNER_DIR = path.join('data', 'images', 'banners');
+/**
+ * Roles members can self-assign via the buttons `/roles` posts. Resolved by NAME
+ * at click time, so the role must exist with this exact name in the guild and the
+ * bot's own role must sit ABOVE it with the Manage Roles permission.
+ */
+export const CLAIMABLE_ROLES = [
+  { key: 'builder', label: 'Builder', roleName: 'Builder', emoji: '🛠️' },
+  { key: 'events', label: 'Events', roleName: 'Events', emoji: '📅' },
+] as const;
+
+/** /roles — posts the self-assign role buttons. Mod-gated. */
+export const rolesCommand = new SlashCommandBuilder()
+  .setName('roles')
+  .setDescription('Post the self-assign role buttons (Builder, Events).')
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+  .setDMPermission(false)
+  .addChannelOption((o) =>
+    o
+      .setName('channel')
+      .setDescription('Channel to post into (defaults to the current channel).')
+      .addChannelTypes(ChannelType.GuildText),
+  )
+  .toJSON();
 
 /** Buttons that let any member self-assign the claimable roles. */
 function buildClaimRow(): ActionRowBuilder<ButtonBuilder> {
@@ -30,16 +50,13 @@ function buildClaimRow(): ActionRowBuilder<ButtonBuilder> {
 }
 
 /**
- * `/resources` — posts the community resources panel (banner + text per section,
- * plus the role-claim buttons) into the chosen channel. Owner-gated upstream in
- * handleInteraction; re-checks ManageGuild here for defense-in-depth.
+ * Posts the button row on its own, so any explanatory text can be written
+ * separately with `/post` and this sits beneath it.
  */
-export async function handleResourcesCommand(
-  interaction: ChatInputCommandInteraction,
-): Promise<void> {
+export async function handleRolesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
     await interaction.reply({
-      content: '⛔ Only moderators can post the resources panel.',
+      content: '⛔ Only moderators can post the role buttons.',
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -51,35 +68,25 @@ export async function handleResourcesCommand(
     return;
   }
 
-  const picked = interaction.options.getChannel('channel');
-  const channelId = picked?.id ?? interaction.channelId;
+  const channelId = interaction.options.getChannel('channel')?.id ?? interaction.channelId;
   const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
-  if (!channel || channel.type !== ChannelType.GuildText) {
+  if (!channel?.isTextBased()) {
     await interaction.editReply('⚠️ Pick a server text channel to post into.');
     return;
   }
 
   try {
-    for (const section of RESOURCE_SECTIONS) {
-      const bannerPath = section.banner ? path.join(BANNER_DIR, section.banner) : null;
-      const hasBanner = bannerPath !== null && fs.existsSync(bannerPath);
-      if (hasBanner && bannerPath) await channel.send({ files: [bannerPath] });
-      // When a banner is present it serves as the header, so skip the text title.
-      const header = hasBanner ? '' : `**${section.title}**\n`;
-      await channel.send({ content: `${header}${section.body}`, allowedMentions: { parse: [] } });
-      if (section.claimButtons) {
-        await channel.send({ components: [buildClaimRow()], allowedMentions: { parse: [] } });
-      }
-    }
+    const posted = await channel.send({
+      components: [buildClaimRow()],
+      allowedMentions: { parse: [] },
+    });
+    await interaction.editReply(`✅ Role buttons posted: ${posted.url}`);
   } catch (error) {
-    logger.error('Failed to post resources panel:', error);
+    logger.error('Failed to post role buttons:', error);
     await interaction.editReply(
-      `⚠️ Posted partially — a message failed: ${error instanceof Error ? error.message : String(error)}`,
+      `⚠️ Failed to post: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return;
   }
-
-  await interaction.editReply(`✅ Resources panel posted to <#${channel.id}>.`);
 }
 
 /**

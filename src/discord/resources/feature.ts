@@ -1,35 +1,40 @@
-import {
-  type ButtonInteraction,
-  ChannelType,
-  PermissionsBitField,
-  SlashCommandBuilder,
-} from 'discord.js';
+import type { ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
 import { ID } from '../constants.js';
 import type { Feature } from '../feature.js';
-import { handleResourcesCommand, handleRoleClaim } from './post.js';
+import { handlePostCommand, handlePostModal, postCommand } from './compose.js';
+import { handleRoleClaim, handleRolesCommand, rolesCommand } from './roles.js';
 import { handleUpdateCommand, handleUpdateModal, updateCommand } from './update.js';
 
-/** /resources — posts the community resources panel + role-claim buttons. Mod-gated. */
-const resourcesCommand = new SlashCommandBuilder()
-  .setName('resources')
-  .setDescription('Post the community resources panel (contacts, roles, protocol, links…).')
-  .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-  .setDMPermission(false)
-  .addChannelOption((o) =>
-    o
-      .setName('channel')
-      .setDescription('Channel to post into (defaults to the current channel).')
-      .addChannelTypes(ChannelType.GuildText),
-  )
-  .toJSON();
+/** command name → handler, so adding a command is one entry rather than a branch. */
+const COMMAND_HANDLERS: Record<
+  string,
+  (interaction: ChatInputCommandInteraction) => Promise<void>
+> = {
+  post: handlePostCommand,
+  update: handleUpdateCommand,
+  roles: handleRolesCommand,
+};
 
+/** modal customId prefix → handler. Prefixes carry their target ids after a `:`. */
+const MODAL_HANDLERS: ReadonlyArray<{
+  prefix: string;
+  handle: (interaction: Parameters<NonNullable<Feature['handleModal']>>[0]) => Promise<void>;
+}> = [
+  { prefix: `${ID.postModal}:`, handle: handlePostModal },
+  { prefix: `${ID.updateModal}:`, handle: handleUpdateModal },
+];
+
+/**
+ * Content authoring: compose a message (`/post`), correct one in place (`/update`),
+ * and post the self-assign role buttons (`/roles`). Panels are created on demand —
+ * there is deliberately no hardcoded content to keep in sync.
+ */
 export const resourcesFeature: Feature = {
   name: 'resources',
-  commands: [resourcesCommand, updateCommand],
-  handleCommand: (interaction) =>
-    interaction.commandName === 'update'
-      ? handleUpdateCommand(interaction)
-      : handleResourcesCommand(interaction),
+  commands: [postCommand, updateCommand, rolesCommand],
+  handleCommand: async (interaction) => {
+    await COMMAND_HANDLERS[interaction.commandName]?.(interaction);
+  },
   handleButton: async (interaction: ButtonInteraction) => {
     // Self-assign role buttons (`claim_role:<key>`) — open to any member.
     if (!interaction.customId.startsWith(`${ID.claimRole}:`)) return false;
@@ -37,9 +42,9 @@ export const resourcesFeature: Feature = {
     return true;
   },
   handleModal: async (interaction) => {
-    // The /update edit modal (`update_modal:<channelId>:<messageId>`).
-    if (!interaction.customId.startsWith(`${ID.updateModal}:`)) return false;
-    await handleUpdateModal(interaction);
+    const entry = MODAL_HANDLERS.find((m) => interaction.customId.startsWith(m.prefix));
+    if (!entry) return false;
+    await entry.handle(interaction);
     return true;
   },
 };
