@@ -94,7 +94,9 @@ export async function handlePostModal(interaction: ModalSubmitInteraction): Prom
   }
 
   const content = interaction.fields.getTextInputValue('content');
-  // The file field is optional; getUploadedFiles returns null rather than throwing.
+  // Safe unguarded only because this modal always includes both fields: an empty
+  // upload yields null, but a MISSING component would throw. Keep both fields
+  // unconditional here, or guard these reads the way /update does.
   const upload = interaction.fields.getUploadedFiles('image')?.first();
 
   try {

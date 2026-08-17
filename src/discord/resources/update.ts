@@ -1,4 +1,5 @@
 import {
+  type Attachment,
   ChannelType,
   type ChatInputCommandInteraction,
   FileUploadBuilder,
@@ -209,7 +210,15 @@ export async function handleUpdateModal(interaction: ModalSubmitInteraction): Pr
   // Treat a whitespace-only box as a deliberate clear, so an edit can't leave an
   // invisible blank line under a banner.
   const content = raw === null ? null : raw.trim() ? raw : '';
-  const upload = interaction.fields.getUploadedFiles('image')?.first();
+  // Likewise absent on a text-only message. getUploadedFiles still THROWS when the
+  // component is missing entirely — its `required` flag only governs an empty value —
+  // so this needs the same guard as the text field above.
+  let upload: Attachment | undefined;
+  try {
+    upload = interaction.fields.getUploadedFiles('image')?.first();
+  } catch {
+    upload = undefined;
+  }
   // The attachment the modal named as "Currently: …" — the one an upload replaces.
   const current = message.attachments.first();
 
