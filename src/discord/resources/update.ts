@@ -118,43 +118,60 @@ export async function handleUpdateCommand(interaction: ChatInputCommandInteracti
     return;
   }
 
-  // The modal adapts to what the message actually holds: a banner message has no
-  // text, so the text field must be optional and unset rather than a required
-  // field pre-filled with an empty string (which cannot be submitted).
+  // The form mirrors the message. An image message gets the uploader, a text message
+  // gets the text box — never both unless the message genuinely carries both. A text
+  // box on a banner is noise, and filling it would render text ABOVE the image.
   const current = message.attachments.first();
-  const text = new TextInputBuilder()
-    .setCustomId('content')
-    .setStyle(TextInputStyle.Paragraph)
-    .setMaxLength(MESSAGE_CONTENT_LIMIT)
-    .setRequired(false);
-  if (message.content) text.setValue(message.content.slice(0, MESSAGE_CONTENT_LIMIT));
+  const hasImage = current !== undefined;
+  const hasText = message.content.length > 0;
+  // A message with neither (a bare /roles button row) still offers text, so context
+  // can be added to it.
+  const showImage = hasImage;
+  const showText = hasText || !hasImage;
 
-  const modal = new ModalBuilder()
-    // customId carries the target so the submit handler knows what to edit.
-    .setCustomId(`${ID.updateModal}:${ref.channelId}:${ref.messageId}`)
-    .setTitle('Edit message')
-    .addComponents(
+  const fields: LabelBuilder[] = [];
+
+  if (showText) {
+    const text = new TextInputBuilder()
+      .setCustomId('content')
+      .setStyle(TextInputStyle.Paragraph)
+      .setMaxLength(MESSAGE_CONTENT_LIMIT)
+      .setRequired(false);
+    if (hasText) text.setValue(message.content.slice(0, MESSAGE_CONTENT_LIMIT));
+    fields.push(
       new LabelBuilder()
         .setLabel('Message text')
-        .setDescription(
-          message.content ? 'Edit the text below.' : 'This message has no text — optional.',
-        )
+        .setDescription(hasText ? 'Edit the text below.' : 'Add text to this message.')
         .setTextInputComponent(text),
+    );
+  }
+
+  if (showImage) {
+    fields.push(
       new LabelBuilder()
         .setLabel('Image')
         // Modals can't render a preview, so name the current file instead.
         .setDescription(
           ellipsize(
-            current
-              ? `Currently: ${ellipsize(current.name, FILENAME_DISPLAY_LIMIT)}. Upload to replace it, or leave empty to keep it.`
-              : 'Optional. Upload an image to add one.',
+            `Currently: ${ellipsize(current.name, FILENAME_DISPLAY_LIMIT)}. Upload a new one to replace it.`,
             LABEL_DESCRIPTION_LIMIT,
           ),
         )
         .setFileUploadComponent(
-          new FileUploadBuilder().setCustomId('image').setRequired(false).setMaxValues(1),
+          new FileUploadBuilder()
+            .setCustomId('image')
+            // Required when it's the only field — replacing is the form's whole job.
+            .setRequired(!showText)
+            .setMaxValues(1),
         ),
     );
+  }
+
+  const modal = new ModalBuilder()
+    // customId carries the target so the submit handler knows what to edit.
+    .setCustomId(`${ID.updateModal}:${ref.channelId}:${ref.messageId}`)
+    .setTitle(showText ? 'Edit message' : 'Replace image')
+    .addComponents(...fields);
 
   await interaction.showModal(modal);
 }
@@ -180,18 +197,18 @@ export async function handleUpdateModal(interaction: ModalSubmitInteraction): Pr
     return;
   }
 
-  // Both fields are optional, so either may be missing from the submission. A throw
-  // here would land after deferReply(), where the router can no longer reply — the
-  // moderator would just watch "thinking…" forever.
-  let raw = '';
+  // An image-only message gets a form with no text field at all, so this is absent
+  // rather than empty — `null` means "leave the text alone". A throw here would land
+  // after deferReply(), where the router can no longer reply, hanging the spinner.
+  let raw: string | null = null;
   try {
     raw = interaction.fields.getTextInputValue('content');
   } catch {
-    raw = '';
+    raw = null;
   }
   // Treat a whitespace-only box as a deliberate clear, so an edit can't leave an
   // invisible blank line under a banner.
-  const content = raw.trim() ? raw : '';
+  const content = raw === null ? null : raw.trim() ? raw : '';
   const upload = interaction.fields.getUploadedFiles('image')?.first();
   // The attachment the modal named as "Currently: …" — the one an upload replaces.
   const current = message.attachments.first();
@@ -205,14 +222,17 @@ export async function handleUpdateModal(interaction: ModalSubmitInteraction): Pr
     message.embeds.length > 0 ||
     message.components.length > 0 ||
     message.stickers.size > 0;
-  if (!content && !keepsBody) {
+  // Only a form that actually offered a text box can empty the message.
+  if (content !== null && !content && !keepsBody) {
     await interaction.editReply(
       '⚠️ That would leave the message empty. Add text, or upload an image.',
     );
     return;
   }
 
-  const payload: MessageEditOptions = { content, allowedMentions: { parse: [] } };
+  const payload: MessageEditOptions = { allowedMentions: { parse: [] } };
+  // `null` means the form had no text field, so the existing text stays untouched.
+  if (content !== null) payload.content = content;
   if (upload) {
     // `attachments` is the KEEP list — omitting it keeps everything. discord.js
     // appends the new upload, so listing every attachment EXCEPT the one the modal
