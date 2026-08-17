@@ -10,6 +10,8 @@ import {
   ModalBuilder,
   type ModalSubmitInteraction,
   PermissionsBitField,
+  type Role,
+  RoleSelectMenuBuilder,
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -19,29 +21,18 @@ import { ID } from '../constants.js';
 
 /** Discord's per-message content ceiling; the modal input is capped to match. */
 const MESSAGE_CONTENT_LIMIT = 2000;
+/** Discord's button label ceiling — role names may exceed it. */
+const BUTTON_LABEL_LIMIT = 80;
+/** One action row holds at most five buttons, so at most five roles per post. */
+const MAX_ROLES = 5;
 
-/** Pre-filled in the form so the box is never blank; edit or clear it freely. */
-const DEFAULT_INTRO = [
-  '​',
-  '> Toggle to claim/remove a role with the buttons below.',
-  '> **Builder** — you’re actively building on Intuition.',
-  '> **Events** — get notified about community events, calls, and activities.',
-].join('\n');
+const ellipsize = (text: string, max: number): string =>
+  text.length > max ? `${text.slice(0, max - 1)}…` : text;
 
-/**
- * Roles members can self-assign via the buttons `/roles` posts. Resolved by NAME
- * at click time, so the role must exist with this exact name in the guild and the
- * bot's own role must sit ABOVE it with the Manage Roles permission.
- */
-export const CLAIMABLE_ROLES = [
-  { key: 'builder', label: 'Builder', roleName: 'Builder', emoji: '🛠️' },
-  { key: 'events', label: 'Events', roleName: 'Events', emoji: '📅' },
-] as const;
-
-/** /roles — posts the self-assign role buttons. Mod-gated. */
+/** /roles — posts self-assign buttons for whichever roles are chosen. Mod-gated. */
 export const rolesCommand = new SlashCommandBuilder()
   .setName('roles')
-  .setDescription('Post the self-assign role buttons (Builder, Events).')
+  .setDescription('Post self-assign role buttons for roles you choose.')
   .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
   .setDMPermission(false)
   .addChannelOption((o) =>
@@ -52,25 +43,19 @@ export const rolesCommand = new SlashCommandBuilder()
   )
   .toJSON();
 
-/** Buttons that let any member self-assign the claimable roles. */
-function buildClaimRow(): ActionRowBuilder<ButtonBuilder> {
+/** A claim button per chosen role. The role id travels in the custom id, so nothing
+ * about the guild's roles is baked into the source. */
+function buildClaimRow(roles: readonly Role[]): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    CLAIMABLE_ROLES.map((r) =>
+    roles.map((role) =>
       new ButtonBuilder()
-        .setCustomId(`${ID.claimRole}:${r.key}`)
-        .setLabel(r.label)
-        .setEmoji(r.emoji)
+        .setCustomId(`${ID.claimRole}:${role.id}`)
+        .setLabel(ellipsize(role.name, BUTTON_LABEL_LIMIT))
         .setStyle(ButtonStyle.Secondary),
     ),
   );
 }
 
-/**
- * Opens a form for the explanatory text that sits above the buttons. Text and
- * buttons go out as ONE message — the content renders above the action row — so
- * they can never drift apart, and `/update` can reword the text later without
- * disturbing the buttons.
- */
 export async function handleRolesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
     await interaction.reply({
@@ -94,15 +79,24 @@ export async function handleRolesCommand(interaction: ChatInputCommandInteractio
     .setTitle('Post role buttons')
     .addComponents(
       new LabelBuilder()
+        .setLabel('Roles')
+        .setDescription(`Pick up to ${MAX_ROLES} — one button each.`)
+        .setRoleSelectMenuComponent(
+          new RoleSelectMenuBuilder()
+            .setCustomId('roles')
+            .setPlaceholder('Choose the roles members can claim')
+            .setMinValues(1)
+            .setMaxValues(MAX_ROLES),
+        ),
+      new LabelBuilder()
         .setLabel('Intro text')
-        .setDescription('Shown above the buttons. Optional, but gives members context.')
+        .setDescription('Shown above the buttons. Optional.')
         .setTextInputComponent(
           new TextInputBuilder()
             .setCustomId('content')
             .setStyle(TextInputStyle.Paragraph)
             .setMaxLength(MESSAGE_CONTENT_LIMIT)
-            .setRequired(false)
-            .setValue(DEFAULT_INTRO),
+            .setRequired(false),
         ),
     );
 
@@ -123,6 +117,18 @@ export async function handleRolesModal(interaction: ModalSubmitInteraction): Pro
     return;
   }
 
+  // The select resolves to raw API roles; re-resolve each id against the guild so we
+  // hold real Role objects (needed for the hierarchy check and for assignment).
+  await interaction.guild.roles.fetch().catch(() => null);
+  const selected = interaction.fields.getSelectedRoles('roles');
+  const roles = [...(selected?.keys() ?? [])]
+    .map((id) => interaction.guild?.roles.cache.get(id))
+    .filter((r): r is Role => r !== undefined);
+  if (roles.length === 0) {
+    await interaction.editReply('⚠️ Pick at least one role.');
+    return;
+  }
+
   // A throw here would land after deferReply(), where the router can no longer reply.
   let raw = '';
   try {
@@ -132,14 +138,28 @@ export async function handleRolesModal(interaction: ModalSubmitInteraction): Pro
   }
   const content = raw.trim() ? raw : undefined;
 
+  // Surface an unassignable role now rather than letting members discover it by
+  // clicking: the bot needs Manage Roles and its own role must outrank the target.
+  const me = await interaction.guild.members.fetchMe().catch(() => null);
+  const canManage = me?.permissions.has(PermissionsBitField.Flags.ManageRoles) ?? false;
+  const tooHigh = me
+    ? roles.filter((r) => me.roles.highest.comparePositionTo(r) <= 0).map((r) => r.name)
+    : [];
+
   try {
     const posted = await channel.send({
       // Buttons alone are a valid message, so empty text simply omits the line.
       ...(content ? { content } : {}),
-      components: [buildClaimRow()],
+      components: [buildClaimRow(roles)],
       allowedMentions: { parse: [] },
     });
-    await interaction.editReply(`✅ Role buttons posted: ${posted.url}`);
+    const warnings = [
+      canManage ? '' : "⚠️ I lack **Manage Roles**, so clicks won't work until that's granted.",
+      tooHigh.length
+        ? `⚠️ My role sits below ${tooHigh.map((n) => `**${n}**`).join(', ')} — move my role above them.`
+        : '',
+    ].filter(Boolean);
+    await interaction.editReply([`✅ Role buttons posted: ${posted.url}`, ...warnings].join('\n'));
   } catch (error) {
     logger.error('Failed to post role buttons:', error);
     await interaction.editReply(
@@ -149,13 +169,11 @@ export async function handleRolesModal(interaction: ModalSubmitInteraction): Pro
 }
 
 /**
- * Toggles a claimable role on the clicking member. Open to any member (role
- * buttons are not behind the owner gate). Resolves the role by name.
+ * Toggles the clicked role on the clicking member. Open to any member (role buttons
+ * are not behind the owner gate). The role is resolved by id from the custom id.
  */
 export async function handleRoleClaim(interaction: ButtonInteraction): Promise<void> {
-  const key = interaction.customId.slice(`${ID.claimRole}:`.length);
-  const spec = CLAIMABLE_ROLES.find((r) => r.key === key);
-  if (!spec) return;
+  const roleId = interaction.customId.slice(`${ID.claimRole}:`.length);
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -163,12 +181,19 @@ export async function handleRoleClaim(interaction: ButtonInteraction): Promise<v
     await interaction.editReply('⚠️ Roles can only be claimed in a server.');
     return;
   }
-
-  const role = interaction.guild.roles.cache.find((r) => r.name === spec.roleName);
-  if (!role) {
+  // Buttons from an older panel carried a name key rather than a role id.
+  if (!/^\d{17,20}$/.test(roleId)) {
     await interaction.editReply(
-      `⚠️ The **${spec.roleName}** role doesn't exist yet — ask a moderator to create it.`,
+      '⚠️ This button is from an older panel and no longer works — ask a moderator to re-post it with `/roles`.',
     );
+    return;
+  }
+
+  const role =
+    interaction.guild.roles.cache.get(roleId) ??
+    (await interaction.guild.roles.fetch(roleId).catch(() => null));
+  if (!role) {
+    await interaction.editReply('⚠️ That role no longer exists — ask a moderator to re-post this.');
     return;
   }
 
