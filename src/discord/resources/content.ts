@@ -33,6 +33,7 @@ export const RESOURCE_SECTIONS: ResourceSection[] = [
       '> **Website**: https://intuition.box',
       '> **Github**: https://github.com/intuition-box',
       '> **X**: https://x.com/intuition_box',
+      '> **Youtube**: https://www.youtube.com/@intuition_box',
       SP,
       '> Toogle to claim/remove a role with the buttons below.',
       '> **Builder** — you’re actively building on Intuition.',

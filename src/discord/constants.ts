@@ -45,4 +45,6 @@ export const ID = {
   modalGeneral: 'modal_general',
   /** Prefix for self-assign role buttons; full id is `claim_role:<key>`. */
   claimRole: 'claim_role',
+  /** Prefix for the /update edit modal; full id is `update_modal:<channelId>:<messageId>`. */
+  updateModal: 'update_modal',
 } as const;

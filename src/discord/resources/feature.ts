@@ -7,6 +7,7 @@ import {
 import { ID } from '../constants.js';
 import type { Feature } from '../feature.js';
 import { handleResourcesCommand, handleRoleClaim } from './post.js';
+import { handleUpdateCommand, handleUpdateModal, updateCommand } from './update.js';
 
 /** /resources — posts the community resources panel + role-claim buttons. Mod-gated. */
 const resourcesCommand = new SlashCommandBuilder()
@@ -24,12 +25,21 @@ const resourcesCommand = new SlashCommandBuilder()
 
 export const resourcesFeature: Feature = {
   name: 'resources',
-  commands: [resourcesCommand],
-  handleCommand: handleResourcesCommand,
+  commands: [resourcesCommand, updateCommand],
+  handleCommand: (interaction) =>
+    interaction.commandName === 'update'
+      ? handleUpdateCommand(interaction)
+      : handleResourcesCommand(interaction),
   handleButton: async (interaction: ButtonInteraction) => {
     // Self-assign role buttons (`claim_role:<key>`) — open to any member.
     if (!interaction.customId.startsWith(`${ID.claimRole}:`)) return false;
     await handleRoleClaim(interaction);
+    return true;
+  },
+  handleModal: async (interaction) => {
+    // The /update edit modal (`update_modal:<channelId>:<messageId>`).
+    if (!interaction.customId.startsWith(`${ID.updateModal}:`)) return false;
+    await handleUpdateModal(interaction);
     return true;
   },
 };
